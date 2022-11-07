@@ -1,7 +1,7 @@
 FROM python:3.10.7-slim AS dependencies-install
 WORKDIR /code
 RUN apt-get update
-RUN apt-get install -y --no-install-recommends build-essential gcc curl g++ openjdk-8-jdk
+#RUN apt-get install -y --no-install-recommends build-essential gcc curl g++ openjdk-8-jdk
 COPY ./requirements.txt /code/requirements.txt
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"

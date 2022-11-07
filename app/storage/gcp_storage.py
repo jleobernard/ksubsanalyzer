@@ -17,15 +17,22 @@ class GCPStorage:
 
     def download_incoming_video(self, video_name: str, target_directory: str) -> str:
         destination_file_name = f"{target_directory}/{video_name}"
-        if os.path.exists(destination_file_name):
-            logger.info(f"Video file {video_name} already downloaded in {destination_file_name}")
-        else:
-            logger.info(f"Downloading file {video_name} from GCP...")
-            base_name = self._get_video_path(video_name)
-            blob = self.bucket.blob(base_name)
-            blob.download_to_filename(destination_file_name)
-            logger.info(f"File downloaded from GCP to {destination_file_name}")
+        base_name = self._get_video_path(video_name)
+        self.download(from_path=base_name, to_path=destination_file_name)
         return destination_file_name
+
+    def download(self, from_path: str, to_path: str, force: bool = False) -> bool:
+        downloaded: bool
+        if os.path.exists(to_path) and not force:
+            logger.info(f"File {to_path} already exists")
+            downloaded = False
+        else:
+            logger.info(f"Downloading file {from_path} from GCP...")
+            blob = self.bucket.blob(from_path)
+            blob.download_to_filename(to_path)
+            logger.info(f"File downloaded from GCP to {to_path}")
+            downloaded = True
+        return downloaded
 
     def upload_analysis_products(self, video_name: str, products_path: List[str]):
         base_name: str = os.path.splitext(video_name)[0]

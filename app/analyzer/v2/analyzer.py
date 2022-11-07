@@ -1,21 +1,25 @@
+
+import io
+import itertools
 import logging
 import os
 import re
-import io
 from typing import List
-import google.auth
+import torch.nn as nn
+
 import cv2
-import torch
-import itertools
-import pandas as pd
+import google.auth
 import numpy as np
+import pandas as pd
+import torch
 from google.cloud import vision
 from konlpy.tag import Komoran
 
-from analyzer.constants import TARGET_WIDTH, TARGET_HEIGHT
-from analyzer.data_utils import SubsDataset, read_image
-from analyzer.model import get_bb_from_bouding_boxes
-from analyzer.utils import get_model, do_lod_specific_model, to_best_device
+from analyzer.data_utils import read_image
+from analyzer.utils import to_best_device
+from analyzer.constants import IMAGE_SIZE
+from analyzer.v2.datasets import EvalSegmentationSubsDataset
+from analyzer.v2.model import AttentionSubsBoxerModel
 
 logger = logging.getLogger(__name__)
 GOOGLE_MAX_HEIGHT = 2050
@@ -36,25 +40,26 @@ class obj:
 
 class VideoAnalyzer:
 
-    def __init__(self, work_directory: str, weights_path: str, target_directory: str,
-                 credentials_path: str, skip_frames: int = 30):
+    def __init__(self, work_directory: str, model_name: str, target_directory: str,
+                 credentials_path: str, storage, skip_frames: int = 30, bb_margin: int = 10):
         self.work_directory = work_directory
         self.target_directory = target_directory
         self.skip_frames = int(skip_frames)
         self.ensure_dir(work_directory)
         self.ensure_dir(target_directory)
         self.threshold = 0.5
-        self.model = get_model(eval=True)
-        self.treated = set([])
+        self.bb_margin = bb_margin
         creds, _ = google.auth.load_credentials_from_file(credentials_path)
         self.vision_client = vision.ImageAnnotatorClient(credentials=creds)
-        do_lod_specific_model(weights_path, self.model)
+        self.storage = storage
+        self.model = self._get_model(model_name)
+        self.treated = set([])
         logging.info("Loading Komoran...")
         self.analyzer = Komoran()
         logging.info("...Komoran loaded")
         logging.info(f"Working with directory {work_directory}")
         logging.info(f"Target       directory {target_directory}")
-        logging.info(f"Loaded model           {weights_path}")
+        logging.info(f"Loaded model           {model_name}")
 
     def ensure_dir(self, file_path):
         os.makedirs(file_path, exist_ok=True)
@@ -211,7 +216,7 @@ class VideoAnalyzer:
         if os.path.exists(annotations_file_path):
             logging.info("--- subs prediction already done")
         else:
-            size = (TARGET_WIDTH, TARGET_HEIGHT)
+            size = (IMAGE_SIZE, IMAGE_SIZE)
             data = []
             should_analyze_file = True
             start = -1
@@ -242,21 +247,16 @@ class VideoAnalyzer:
                     if should_analyze_file:
                         resized_file_path = f"{self.work_directory}/{prefix_splitted}-resized-{i}.jpg"
                         cv2.imwrite(resized_file_path, cv2.cvtColor(im, cv2.COLOR_RGB2BGR))
-                        test_ds = SubsDataset(pd.DataFrame([{'path': resized_file_path}])['path'],
-                                              pd.DataFrame([{'bb': np.array([0, 0, 0, 0])}])['bb'],
-                                              pd.DataFrame([{'y': [0]}])['y'])
-                        x, y_class, y_bb, _ = test_ds[0]
+                        test_ds = EvalSegmentationSubsDataset(pd.DataFrame([{'filename': resized_file_path}]))
+                        x = test_ds[0]
                         xx = to_best_device(torch.FloatTensor(x[None,]))
-                        out_class, out_bb = self.model(xx)
-                        class_hat = torch.sigmoid(out_class.detach().cpu()).numpy()
-                        if class_hat[0][0] >= self.threshold:
-                            bb_hat = out_bb.detach().cpu()
-                            bounding_boxes = get_bb_from_bouding_boxes(bb_hat, height=TARGET_HEIGHT, width=TARGET_WIDTH)
-                            bb = bounding_boxes[0].numpy()
-                            y0 = int(np.floor(min(bb[0], bb[2])))
-                            y1 = int(np.ceil(max(bb[0], bb[2])))
-                            x0 = int(np.floor(min(bb[1], bb[3])))
-                            x1 = int(np.ceil(max(bb[1], bb[3])))
+                        predicted_bbs = self.model(xx)
+                        x0, y0, x1, y1, present = predicted_bbs.detach().cpu()[0]
+                        if present >= self.threshold:
+                            y0 = int(np.floor(max(y0 - self.bb_margin, 0)))
+                            y1 = int(np.ceil(min(y1 + self.bb_margin, IMAGE_SIZE - 1)))
+                            x0 = int(np.floor(max(x0 - self.bb_margin, 0)))
+                            x1 = int(np.ceil(min(x1 + self.bb_margin, IMAGE_SIZE - 1)))
                             start = i
                             should_analyze_file = False
                             current_zone = np.array(im[y0: y1, x0: x1])
@@ -399,24 +399,10 @@ class VideoAnalyzer:
                     my_texts[block_index] = ''.join(text)
         return my_texts
 
-    def analyze(self, video_name: str):
-        logger.info(f"Analyzing file {video_name}")
-
-
-"""
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="Démarrage du pipeline d'extraction de sous-titres")
-    parser.add_argument('--conf', dest='conf_path', help='Path to conf', required=True)
-    parser.add_argument('--file', dest='file', help='Path to file to analyze', required=True)
-    args = parser.parse_args()
-    load_dotenv(args.conf_path)
-
-    in_directory = os.getenv("income_dir")
-    work_directory = os.getenv("work_directory")
-    skip_frames = os.getenv("skip_frames")
-    model_path = os.getenv("model_path")
-    target_directory = os.getenv("target_directory")
-    handler = Handler(work_directory=work_directory, skip_frames=int(skip_frames), weights_path=model_path,
-                      target_directory=target_directory)
-    handler.treat_incoming_file(args.file)
-"""
+    def _get_model(self, model_name: str) -> nn.Module:
+        weights_path: str = f"/tmp/{model_name}"
+        model = to_best_device(AttentionSubsBoxerModel(num_encoder_layers=8))
+        self.storage.download(from_path=f"/models/{model_name}", to_path=weights_path)
+        model.load_state_dict(torch.load(weights_path, map_location=torch.device('cpu')))
+        model.eval()
+        return model

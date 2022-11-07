@@ -10,9 +10,8 @@ from google.cloud import pubsub_v1
 logging.basicConfig(format='%(asctime)s[%(levelname)s] %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-from analyzer.analyzer import VideoAnalyzer
+from analyzer.v2.analyzer import VideoAnalyzer
 from storage.gcp_storage import GCPStorage
-
 
 subscription_id = os.getenv("GCP_PUBSUB_SUBSCRIPTION_ID")
 pub_sub_creds, project_id = google.auth.load_credentials_from_file(os.getenv("GCP_PUBSUB_CREDENTIALS"))
@@ -22,13 +21,14 @@ subscription_path = subscriber.subscription_path(project_id, subscription_id)
 work_directory = os.getenv("WORK_DIRECTORY")
 target_directory = os.getenv("TARGET_DIRECTORY")
 
-analyzer = VideoAnalyzer(work_directory=work_directory,
-                         weights_path=os.getenv("MODEL_PATH"),
-                         target_directory=target_directory,
-                         skip_frames=int(os.getenv("SKIP_FRAMES")),
-                         credentials_path=os.getenv("GCP_VISION_CREDENTIALS"),)
 gcp_storage = GCPStorage(credentials_path=os.getenv("GCP_STORAGE_CREDENTIALS"),
                          bucket_id=os.getenv("GCP_STORAGE_BUCKET_ID"))
+analyzer = VideoAnalyzer(work_directory=work_directory,
+                         model_name=os.getenv("MODEL_NAME"),
+                         target_directory=target_directory,
+                         skip_frames=int(os.getenv("SKIP_FRAMES")),
+                         credentials_path=os.getenv("GCP_VISION_CREDENTIALS"),
+                         storage=gcp_storage)
 
 
 def callback(message: pubsub_v1.subscriber.message.Message) -> None:
@@ -42,7 +42,8 @@ def callback(message: pubsub_v1.subscriber.message.Message) -> None:
         gcp_storage.upload_analysis_products(video_name=video_name, products_path=products_path)
 
     except BaseException as err:
-        logger.error(f"Error while treating message {message}: {err=}")
+        logger.error(f"Error while treating message {message}")
+        logger.error(err)
 
 
 streaming_pull_future = subscriber.subscribe(subscription_path, callback=callback)
