@@ -1,13 +1,27 @@
 import json
-import logging
+import logging.config
 import os
 from typing import List
 
 import google.auth
 from concurrent.futures import TimeoutError
 from google.cloud import pubsub_v1
+from pathlib import Path
 
-logging.basicConfig(format='%(asctime)s[%(levelname)s] %(message)s', level=logging.INFO)
+# setup loggers
+main_dir = os.path.dirname(os.path.realpath(__file__))
+parent_dir = Path(main_dir).parent.absolute()
+if os.path.exists(f"{main_dir}/logging.conf"):
+    logging_conf_file = open(f"{main_dir}/logging.conf", mode="r")
+elif os.path.exists(f"{parent_dir}/logging.conf"):
+    logging_conf_file = open(f"{parent_dir}/logging.conf", mode="r")
+else:
+    raise RuntimeError(f"The file logging.conf could not be found in the current directory ({main_dir}) nor in its "
+                       f"parent {parent_dir}")
+try:
+    logging.config.fileConfig(logging_conf_file, disable_existing_loggers=False)
+finally:
+    logging_conf_file.close()
 logger = logging.getLogger(__name__)
 
 from analyzer.v2.analyzer import VideoAnalyzer
@@ -40,7 +54,8 @@ def callback(message: pubsub_v1.subscriber.message.Message) -> None:
         video_path: str = gcp_storage.download_incoming_video(video_name=video_name, target_directory=work_directory)
         products_path: List[str] = analyzer.treat_incoming_file(video_path)
         gcp_storage.upload_analysis_products(video_name=video_name, products_path=products_path)
-
+        analyzer.clean(video_name)
+        logger.info(f"Done treating message for video {video_name}")
     except BaseException as err:
         logger.error(f"Error while treating message {message}")
         logger.error(err)

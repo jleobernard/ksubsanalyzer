@@ -1,12 +1,13 @@
-
 import io
 import itertools
 import logging
 import os
 import re
 import shutil
-from typing import List
-
+import glob
+import fnmatch
+from typing import List, Tuple
+from tqdm import tqdm
 import cv2
 import google.auth
 import numpy as np
@@ -32,7 +33,6 @@ COLUMN_WIDTH = int(GOOGLE_MAX_WIDTH / NB_COLUMNS)
 
 BREAKS = vision.TextAnnotation.DetectedBreak.BreakType
 
-
 class obj:
     # constructor
     def __init__(self, dict1):
@@ -55,33 +55,36 @@ class VideoAnalyzer:
         self.storage = storage
         self.model = self._get_model(model_name)
         self.treated = set([])
-        logging.info("Loading Komoran...")
+        logger.info("Loading Komoran...")
         self.analyzer = Komoran()
-        logging.info("...Komoran loaded")
-        logging.info(f"Working with directory {work_directory}")
-        logging.info(f"Target       directory {target_directory}")
-        logging.info(f"Loaded model           {model_name}")
+        logger.info("...Komoran loaded")
+        logger.info(f"Working with directory {work_directory}")
+        logger.info(f"Target       directory {target_directory}")
+        logger.info(f"Loaded model           {model_name}")
 
     def ensure_dir(self, file_path):
         os.makedirs(file_path, exist_ok=True)
 
     def treat_incoming_file(self, file_path: str) -> List[str]:
-        logging.info(f"Treating file {file_path}")
+        logger.info(f"Treating file {file_path}")
         work_file_path = self.prepare_file(file_path)
         if work_file_path:
             prefix_splitted: str = self.split_file(work_file_path)
-            annotation_file = self.create_annotations(prefix_splitted)
+            annotation_file, byproducts = self.create_annotations(prefix_splitted)
             annotation_file_with_subs = self.add_subs(annotation_file, prefix_splitted)
             annotation_file_polished = self.polish(annotation_file_with_subs, prefix_splitted, work_file_path)
             annotation_file_final = self.parse_korean(annotation_file_polished, prefix_splitted)
             products = [annotation_file_final, work_file_path, file_path]
             products = self.move_products(prefix_splitted, products)
-            logging.info(f"Done ! {file_path} treated")
+            # Get useful by products
+            if len(byproducts) > 0:
+                products.extend(byproducts)
+            logger.info(f"Done ! {file_path} treated")
             return products
         return []
 
     def move_products(self, prefix: str, products_path: [str]) -> List[str]:
-        logging.info(f"Moving products of {prefix} to {self.target_directory}")
+        logger.info(f"Moving products of {prefix} to {self.target_directory}")
         dest_dir = f"{self.target_directory}/{prefix}"
         self.ensure_dir(dest_dir)
         final_paths: List[str] = []
@@ -89,12 +92,12 @@ class VideoAnalyzer:
             file_name = os.path.basename(path)
             final_path = f"{dest_dir}/{file_name}"
             shutil.move(path, final_path)
-            logging.info(f"------ {path} moved to {final_path}")
+            logger.info(f"------ {path} moved to {final_path}")
             final_paths.append(final_path)
         return final_paths
 
     def parse_korean(self, annotation_file_path: str, prefix: str) -> str:
-        logging.info("Parsing korean subs")
+        logger.info("Parsing korean subs")
         final_annotation_file_path = f"{self.work_directory}/{prefix}.csv"
         df_in = pd.read_csv(annotation_file_path)
         extends = []
@@ -107,7 +110,7 @@ class VideoAnalyzer:
                 extension.append(p[1])
             extends.append(extension)
             if (i + 1) % 100 == 0:
-                logging.debug(f"{i + 1} / {nb_lines} subs analyzed")
+                logger.debug(f"{i + 1} / {nb_lines} subs analyzed")
 
         extends = np.array(list(zip(*itertools.zip_longest(*extends, fillvalue=''))))
         nb_extra_columns = len(extends[0])
@@ -117,10 +120,10 @@ class VideoAnalyzer:
         return final_annotation_file_path
 
     def polish(self, annotation_file_path: str, prefix: str, video_file_path: str):
-        logging.info("Polishing of the file")
+        logger.info("Polishing of the file")
         final_annotation_file_path = f"{self.work_directory}/{prefix}-polished.csv"
         if os.path.exists(final_annotation_file_path):
-            logging.info("--- Polishing already done")
+            logger.info("--- Polishing already done")
         else:
             df_in = pd.read_csv(annotation_file_path)
             video = cv2.VideoCapture(video_file_path)
@@ -196,13 +199,13 @@ class VideoAnalyzer:
                     cv2.imwrite(f"{self.work_directory}/{filename_without_extension}-{str(i)}.jpg", frame)
                     i += 1
                     if i % 10 == 0:
-                        print(f"--- Exported {i} frames")
+                        logger.info(f"--- Exported {i} frames")
             cap.release()
             cv2.destroyAllWindows()
-            print(f"End splitting file {file_path} into {self.work_directory} with prefix {filename_without_extension}")
+            logger.info(f"End splitting file {file_path} into {self.work_directory} with prefix {filename_without_extension}")
         return filename_without_extension
 
-    def create_annotations(self, prefix_splitted: str):
+    def create_annotations(self, prefix_splitted: str) -> Tuple[str, List[str]]:
         """
         Analyze splitted files to detect bounding boxes
         :param prefix_splitted: Prefix of the files containing the frames of the video
@@ -212,10 +215,11 @@ class VideoAnalyzer:
         start: int, index of the continuous series of frames containing the same subs
         end: int, index of the continuous series of frames containing the same subs
         """
-        logging.info("Predicting subs from video")
+        logger.info("Predicting subs from video")
         annotations_file_path = f"{self.work_directory}/annotations_{prefix_splitted}.csv"
+        byproducts: List[str] = []
         if os.path.exists(annotations_file_path):
-            logging.info("--- subs prediction already done")
+            logger.info("--- subs prediction already done")
         else:
             size = (IMAGE_SIZE, IMAGE_SIZE)
             data = []
@@ -228,7 +232,8 @@ class VideoAnalyzer:
             y1 = -1
             current_file_path: str = None
             current_zone: np.array = None
-            while True:
+            num_files = len(fnmatch.filter(os.listdir(self.work_directory), f"{prefix_splitted}-*.jpg"))
+            for i in tqdm(range(num_files)):
                 splitted_file = f"{self.work_directory}/{prefix_splitted}-{i}.jpg"
                 if os.path.exists(splitted_file):
                     im = read_image(splitted_file)
@@ -244,7 +249,7 @@ class VideoAnalyzer:
                             current_file_path = None
                             start = None
                         else:
-                            logging.debug(f"Optimize frame {i} with frame {start}")
+                            logger.debug(f"Optimize frame {i} with frame {start}")
                     if should_analyze_file:
                         resized_file_path = f"{self.work_directory}/{prefix_splitted}-resized-{i}.jpg"
                         cv2.imwrite(resized_file_path, cv2.cvtColor(im, cv2.COLOR_RGB2BGR))
@@ -261,9 +266,9 @@ class VideoAnalyzer:
                             x1 = int(np.ceil(min(x1 + self.bb_margin, IMAGE_SIZE - 1)))
                             has_bb = self._is_trustable_bounding_box(x0, y0, x1, y1)
                             if not has_bb:
-                                cv2.imwrite(
-                                    f"{self.work_directory}/{prefix_splitted}-postmortem-{i}.jpg",
-                                    cv2.cvtColor(im, cv2.COLOR_RGB2BGR))
+                                postmortem_file = f"{self.work_directory}/{prefix_splitted}-postmortem-{i}.jpg"
+                                cv2.imwrite(postmortem_file, cv2.cvtColor(im, cv2.COLOR_RGB2BGR))
+                                byproducts.append(postmortem_file)
                         if has_bb:
                             start = i
                             should_analyze_file = False
@@ -279,14 +284,14 @@ class VideoAnalyzer:
                 else:
                     if current_zone is not None:
                         data.extend([[current_file_path, start, i - 1]])
-                    logging.info(f"--- inference done on {i} files")
+                    logger.info(f"--- inference done on {i} files")
                     break
                 i += 1
                 if i % 20 == 0:
-                    logging.debug(f"------ {i} files parsed")
+                    logger.debug(f"------ {i} files parsed")
             annotations = pd.DataFrame(columns=['filename', 'start', 'end'], data=data)
             annotations.to_csv(annotations_file_path, encoding='utf-8')
-        return annotations_file_path
+        return annotations_file_path, byproducts
 
     @staticmethod
     def same_subs(expected_zone: np.ndarray, image_zone: np.ndarray) -> bool:
@@ -297,10 +302,10 @@ class VideoAnalyzer:
         return ratio > 0.75
 
     def add_subs(self, annotation_file_extraction: str, prefix: str) -> str:
-        logging.info("Adding subs")
+        logger.info("Adding subs")
         file_with_subs_path = f"{self.work_directory}/{prefix}-with-subs.csv"
         if os.path.exists(file_with_subs_path):
-            logging.info("--- Subs already added")
+            logger.info("--- Subs already added")
         else:
             df_annotations_in = pd.read_csv(annotation_file_extraction)
             background_images = []
@@ -310,7 +315,7 @@ class VideoAnalyzer:
             has_data = False
             subtitles_per_frame = []
             nb_subs_for_page = 0
-            for i, annotation in df_annotations_in.iterrows():
+            for i, annotation in tqdm(df_annotations_in.iterrows()):
                 y0 = row * COLUMN_HEIGHT
                 x0 = column * COLUMN_WIDTH
                 image_file_path = annotation['filename']
@@ -339,13 +344,14 @@ class VideoAnalyzer:
             if has_data:
                 background_images.append({'image': background_image, 'nb': nb_subs_for_page})
 
-            for i, bg in enumerate(background_images):
+            for i, bg in tqdm(enumerate(background_images)):
                 bg_image_path = f"{self.work_directory}/{i}.jpg"
                 cv2.imwrite(bg_image_path, bg['image'])
                 full_text_annotation = self.send_image_to_google(bg_image_path)
                 subs = self.get_texts(full_text_annotation)
                 for sub in subs[: bg['nb']]:
                     subtitles_per_frame.append(self.__clean_sub___(sub))
+            logger.info(f"{len(background_images)} calls made to Google")
 
             df_annotations_in['subs'] = subtitles_per_frame
             df_annotations_in = df_annotations_in[df_annotations_in.subs != '']
@@ -360,7 +366,7 @@ class VideoAnalyzer:
         return subs.strip()
 
     def send_image_to_google(self, bg_image_path):
-        print(f"........... Appel à Google")
+        logger.debug(f"........... Appel à Google")
         with io.open(bg_image_path, 'rb') as image_file:
             content = image_file.read()
         image = vision.Image(content=content)
@@ -418,3 +424,15 @@ class VideoAnalyzer:
 
     def _is_trustable_bounding_box(self, x0: int, y0: int, x1: int, y1: int) -> bool:
         return x1 - x0 > self.bb_margin and y1 - y0 > self.bb_margin
+
+    def clean(self, video_name):
+        logger.info(f"Cleaning work files of {video_name}")
+        filename_without_extension = os.path.splitext(os.path.basename(video_name))[0]
+        file_list = glob.glob(f"{self.work_directory}/*{filename_without_extension}*")
+        for file_path in tqdm(file_list):
+            if os.path.isfile(file_path):
+                try:
+                    logger.debug(f"Removing file {file_path}")
+                    os.remove(file_path)
+                except BaseException as err:
+                    logger.warning(f"Error while deleting file {file_path}", err)
