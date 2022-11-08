@@ -4,20 +4,21 @@ import itertools
 import logging
 import os
 import re
-from typing import List
-import torch.nn as nn
 import shutil
+from typing import List
+
 import cv2
 import google.auth
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn as nn
 from google.cloud import vision
 from konlpy.tag import Komoran
 
+from analyzer.constants import IMAGE_SIZE
 from analyzer.data_utils import read_image
 from analyzer.utils import to_best_device
-from analyzer.constants import IMAGE_SIZE
 from analyzer.v2.datasets import EvalSegmentationSubsDataset
 from analyzer.v2.model import AttentionSubsBoxerModel
 
@@ -252,11 +253,18 @@ class VideoAnalyzer:
                         xx = to_best_device(torch.FloatTensor(x[None,]))
                         predicted_bbs = self.model(xx)
                         x0, y0, x1, y1, present = predicted_bbs.detach().cpu()[0]
-                        if present >= self.threshold:
+                        has_bb: bool = present >= self.threshold
+                        if has_bb:
                             y0 = int(np.floor(max(y0 - self.bb_margin, 0)))
                             y1 = int(np.ceil(min(y1 + self.bb_margin, IMAGE_SIZE - 1)))
                             x0 = int(np.floor(max(x0 - self.bb_margin, 0)))
                             x1 = int(np.ceil(min(x1 + self.bb_margin, IMAGE_SIZE - 1)))
+                            has_bb = self._is_trustable_bounding_box(x0, y0, x1, y1)
+                            if not has_bb:
+                                cv2.imwrite(
+                                    f"{self.work_directory}/{prefix_splitted}-postmortem-{i}.jpg",
+                                    cv2.cvtColor(im, cv2.COLOR_RGB2BGR))
+                        if has_bb:
                             start = i
                             should_analyze_file = False
                             current_zone = np.array(im[y0: y1, x0: x1])
@@ -407,3 +415,6 @@ class VideoAnalyzer:
         model.load_state_dict(loaded_weights)
         model.eval()
         return model
+
+    def _is_trustable_bounding_box(self, x0: int, y0: int, x1: int, y1: int) -> bool:
+        return x1 - x0 > self.bb_margin and y1 - y0 > self.bb_margin
