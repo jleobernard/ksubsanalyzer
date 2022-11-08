@@ -28,9 +28,13 @@ from analyzer.v2.analyzer import VideoAnalyzer
 from storage.gcp_storage import GCPStorage
 
 subscription_id = os.getenv("GCP_PUBSUB_SUBSCRIPTION_ID")
+topic_id = os.getenv("GCP_PUBSUB_TOPIC_ID")
 pub_sub_creds, project_id = google.auth.load_credentials_from_file(os.getenv("GCP_PUBSUB_CREDENTIALS"))
 subscriber = pubsub_v1.SubscriberClient(credentials=pub_sub_creds)
 subscription_path = subscriber.subscription_path(project_id, subscription_id)
+
+pub_sub_write_creds, project_id = google.auth.load_credentials_from_file(os.getenv("GCP_PUBSUB_WRITE_CREDENTIALS"))
+publisher = pubsub_v1.PublisherClient(credentials=pub_sub_write_creds)
 
 work_directory = os.getenv("WORK_DIRECTORY")
 target_directory = os.getenv("TARGET_DIRECTORY")
@@ -45,6 +49,21 @@ analyzer = VideoAnalyzer(work_directory=work_directory,
                          storage=gcp_storage)
 
 
+def publish_notification_video_treated(video_name):
+    notification = {
+        'videoName': video_name,
+        'type': 'PROCESSED'
+    }
+    logger.info(f"Sending notification that the video {video_name} has been treated")
+    try:
+        publisher.publish(topic=topic_id,
+                          data=str.encode(json.dumps(notification)),
+                          type='PROCESSED')
+        logger.info("Notification sent")
+    except BaseException as err:
+        logger.error("Error while sending notification", err)
+
+
 def callback(message: pubsub_v1.subscriber.message.Message) -> None:
     message.ack()
     try:
@@ -56,6 +75,7 @@ def callback(message: pubsub_v1.subscriber.message.Message) -> None:
         gcp_storage.upload_analysis_products(video_name=video_name, products_path=products_path)
         analyzer.clean(video_name)
         logger.info(f"Done treating message for video {video_name}")
+        publish_notification_video_treated(video_name)
     except BaseException as err:
         logger.error(f"Error while treating message {message}")
         logger.error(err)
