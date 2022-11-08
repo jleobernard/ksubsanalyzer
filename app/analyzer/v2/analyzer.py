@@ -6,7 +6,7 @@ import os
 import re
 from typing import List
 import torch.nn as nn
-
+import shutil
 import cv2
 import google.auth
 import numpy as np
@@ -87,7 +87,7 @@ class VideoAnalyzer:
         for path in products_path:
             file_name = os.path.basename(path)
             final_path = f"{dest_dir}/{file_name}"
-            os.rename(path, final_path)
+            shutil.move(path, final_path)
             logging.info(f"------ {path} moved to {final_path}")
             final_paths.append(final_path)
         return final_paths
@@ -402,7 +402,8 @@ class VideoAnalyzer:
     def _get_model(self, model_name: str) -> nn.Module:
         weights_path: str = f"/tmp/{model_name}"
         model = to_best_device(AttentionSubsBoxerModel(num_encoder_layers=8))
-        self.storage.download(from_path=f"/models/{model_name}", to_path=weights_path)
-        model.load_state_dict(torch.load(weights_path, map_location=torch.device('cpu')))
+        self.storage.download(from_path=f"models/{model_name}", to_path=weights_path)
+        loaded_weights = torch.load(weights_path, map_location=torch.device('cpu'))
+        model.load_state_dict(loaded_weights)
         model.eval()
         return model

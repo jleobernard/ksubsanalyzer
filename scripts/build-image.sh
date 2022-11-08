@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -e
-KSA_VERSION=0.0.1
+KSA_VERSION=2.0.0
 
 FULL_PATH_TO_SCRIPT="$(realpath "$0")"
 SCRIPT_DIRECTORY="$(dirname "$FULL_PATH_TO_SCRIPT")"
