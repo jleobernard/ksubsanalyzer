@@ -1,12 +1,11 @@
 import json
 import logging.config
 import os
+from concurrent.futures import TimeoutError
+from pathlib import Path
 from typing import List
 
-import google.auth
-from concurrent.futures import TimeoutError
 from google.cloud import pubsub_v1
-from pathlib import Path
 
 # setup loggers
 main_dir = os.path.dirname(os.path.realpath(__file__))
@@ -29,23 +28,20 @@ from storage.gcp_storage import GCPStorage
 
 subscription_id = os.getenv("GCP_PUBSUB_SUBSCRIPTION_ID")
 topic_id = os.getenv("GCP_PUBSUB_TOPIC_ID")
-pub_sub_creds, project_id = google.auth.load_credentials_from_file(os.getenv("GCP_PUBSUB_CREDENTIALS"))
-subscriber = pubsub_v1.SubscriberClient(credentials=pub_sub_creds)
+project_id = os.getenv("GCP_PROJECT_ID")
+subscriber = pubsub_v1.SubscriberClient()
 subscription_path = subscriber.subscription_path(project_id, subscription_id)
-
-pub_sub_write_creds, project_id = google.auth.load_credentials_from_file(os.getenv("GCP_PUBSUB_WRITE_CREDENTIALS"))
-publisher = pubsub_v1.PublisherClient(credentials=pub_sub_write_creds)
+publisher = pubsub_v1.PublisherClient()
+topic_path = publisher.topic_path(project_id, topic_id)
 
 work_directory = os.getenv("WORK_DIRECTORY")
 target_directory = os.getenv("TARGET_DIRECTORY")
 
-gcp_storage = GCPStorage(credentials_path=os.getenv("GCP_STORAGE_CREDENTIALS"),
-                         bucket_id=os.getenv("GCP_STORAGE_BUCKET_ID"))
+gcp_storage = GCPStorage(bucket_id=os.getenv("GCP_STORAGE_BUCKET_ID"))
 analyzer = VideoAnalyzer(work_directory=work_directory,
                          model_name=os.getenv("MODEL_NAME"),
                          target_directory=target_directory,
                          skip_frames=int(os.getenv("SKIP_FRAMES")),
-                         credentials_path=os.getenv("GCP_VISION_CREDENTIALS"),
                          storage=gcp_storage)
 
 
@@ -56,7 +52,7 @@ def publish_notification_video_treated(video_name):
     }
     logger.info(f"Sending notification that the video {video_name} has been treated")
     try:
-        publisher.publish(topic=topic_id,
+        publisher.publish(topic=topic_path,
                           data=str.encode(json.dumps(notification)),
                           type='PROCESSED')
         logger.info("Notification sent")

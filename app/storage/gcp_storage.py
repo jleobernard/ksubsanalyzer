@@ -3,16 +3,14 @@ import os
 from typing import List
 
 from google.cloud import storage
-import google.auth
 
 logger = logging.getLogger(__name__)
 
 
 class GCPStorage:
 
-    def __init__(self, credentials_path: str, bucket_id: str):
-        creds, project_id = google.auth.load_credentials_from_file(credentials_path)
-        self.storage_client = storage.Client(credentials=creds)
+    def __init__(self, bucket_id: str):
+        self.storage_client = storage.Client()
         self.bucket = self.storage_client.bucket(bucket_id)
 
     def download_incoming_video(self, video_name: str, target_directory: str) -> str:

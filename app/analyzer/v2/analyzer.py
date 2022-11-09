@@ -41,8 +41,8 @@ class obj:
 
 class VideoAnalyzer:
 
-    def __init__(self, work_directory: str, model_name: str, target_directory: str,
-                 credentials_path: str, storage, skip_frames: int = 30, bb_margin: int = 10):
+    def __init__(self, work_directory: str, model_name: str, target_directory: str,storage, skip_frames: int = 30,
+                 bb_margin: int = 10):
         self.work_directory = work_directory
         self.target_directory = target_directory
         self.skip_frames = int(skip_frames)
@@ -50,8 +50,7 @@ class VideoAnalyzer:
         self.ensure_dir(target_directory)
         self.threshold = 0.5
         self.bb_margin = bb_margin
-        creds, _ = google.auth.load_credentials_from_file(credentials_path)
-        self.vision_client = vision.ImageAnnotatorClient(credentials=creds)
+        self.vision_client = vision.ImageAnnotatorClient()
         self.storage = storage
         self.model = self._get_model(model_name)
         self.treated = set([])
